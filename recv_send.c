@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <stdio.h>
+#include "recv_send.h"
 
 
 #define RX_RING_SIZE 128
@@ -29,8 +30,8 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool);
 void  PRINT_MESSAGE(unsigned char *msg, int len);
 
 static const struct rte_eth_conf port_conf_default = {
-	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN, }
-
+	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN, },
+	.txmode = { .offloads = DEV_TX_OFFLOAD_IPV4_CKSUM ,}
 };
 
 FILE *fp;
@@ -227,13 +228,22 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 int receive_send_pkt(struct rte_mempool *mbuf_pool)
 {
-	//uint64_t total_addr;
+	uint64_t total_tx;
+	uint64_t recv_size = 0;
+	struct rte_mbuf *single_pkt;
 	unsigned char mac_addr[6];// = {0x76,0xfb,0xc5,0x78,0x6e,0xd5};
 	rte_eth_macaddr_get(0,(struct ether_addr *)mac_addr);
 	printf("mac = %x:%x:%x:%x:%x:%x\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
 	uint32_t ip_addr = htonl(0xc0a80166);
+	uint64_t cur_tsc;
+	uint64_t prev_tsc = 0;
+	float cur_time = 0;
+	uint64_t cur_clock = 0;
+	struct icmp_hdr *icmphdr;
+	struct udp_hdr udphdr;
 	for(;;) {
 		struct rte_mbuf * pkt[BURST_SIZE];
+		total_tx = 0;
 		int i;
 		/*for(i=0;i<BURST_SIZE;i++) {
 			pkt[i] = rte_pktmbuf_alloc(mbuf_pool);
@@ -254,22 +264,24 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 			//rte_pktmbuf_free(pkt[i]);
 			continue;
 		}
-		printf("nb_rx = %x\n", nb_rx);
+		//printf("nb_rx = %x\n", nb_rx);
 		struct ether_hdr * eth_hdr;
-		fp = fopen("test.txt","a");
+		//fp = fopen("test.txt","a");
 		//fprintf(fp, "nb rx = %x\n", nb_rx);
 		for(i=0;i<nb_rx;i++) {
+			single_pkt = pkt[i];
+			rte_prefetch0(rte_pktmbuf_mtod(single_pkt, void *));
 			//printf("pkt->pkt_len = %x data_len  = %x\n", pkt[i]->pkt_len, pkt[i]->data_len);
 			//fprintf(fp, "%d %d %x %x %x %x %c", i, nb_rx, pkt[i]->pkt_len, pkt[i]->data_off, pkt[i]->buf_addr, rte_pktmbuf_mtod(pkt[i],struct ether_hdr*), '\n');
 			//printf("i = %d nb_rx = %d\n", i, nb_rx);
 			//printf("mbuf addr = %x\n", (uint32_t *)(pkt[i]->buf_addr));
-			eth_hdr = rte_pktmbuf_mtod(pkt[i],struct ether_hdr*);
+			eth_hdr = rte_pktmbuf_mtod(single_pkt,struct ether_hdr*);
 			//printf("ether type = %x\n", eth_hdr->ether_type);
 			if (eth_hdr->ether_type == htons(0x0806)) {
 				//PRINT_MESSAGE((char *)eth_hdr,pkt[i]->data_len);
 				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
 				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
-				struct arp_hdr *arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(pkt[i], unsigned char *) + sizeof(struct ether_hdr));
+				struct arp_hdr *arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
 				//fprintf(fp, "arp src ip = %x op code = %x\n", arphdr->arp_data.arp_sip, arphdr->arp_op);
 				if (arphdr->arp_op == htons(0x0001) && arphdr->arp_data.arp_tip == ip_addr) {
 					//printf("<%d\n", __LINE__);
@@ -279,6 +291,7 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 					arphdr->arp_data.arp_sip = ip_addr;
 					arphdr->arp_op = htons(0x0002);
 				}
+				pkt[total_tx++] = single_pkt;
 				//fprintf(fp, "src mac = %x:%x:%x:%x:%x:%x dst mac = %x:%x:%x:%x:%x:%x\n", arphdr->arp_data.arp_sha.addr_bytes[0], arphdr->arp_data.arp_sha.addr_bytes[1], arphdr->arp_data.arp_sha.addr_bytes[2], arphdr->arp_data.arp_sha.addr_bytes[3], arphdr->arp_data.arp_sha.addr_bytes[4], arphdr->arp_data.arp_sha.addr_bytes[5], arphdr->arp_data.arp_tha.addr_bytes[0], arphdr->arp_data.arp_tha.addr_bytes[1], arphdr->arp_data.arp_tha.addr_bytes[2], arphdr->arp_data.arp_tha.addr_bytes[3], arphdr->arp_data.arp_tha.addr_bytes[4], arphdr->arp_data.arp_tha.addr_bytes[5]);
 			}
 			/*printf("recv packet from: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
@@ -291,17 +304,17 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 				//unsigned char src_mac[6] = {0xbe,0xc2,0x46,0xe9,0x1a,0x24};
 				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
 				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
-				struct ipv4_hdr *ip_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(pkt[i], unsigned char *) + sizeof(struct ether_hdr));
+				struct ipv4_hdr *ip_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
 				ip_hdr->dst_addr = ip_hdr->src_addr;
 				ip_hdr->src_addr = ip_addr;
-				struct icmp_hdr *icmphdr;
-				pkt[i]->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
-				pkt[i]->l2_len = sizeof(struct ether_hdr);
-				pkt[i]->l3_len = sizeof(struct ipv4_hdr);
+				single_pkt->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
+				single_pkt->l2_len = sizeof(struct ether_hdr);
+				single_pkt->l3_len = sizeof(struct ipv4_hdr);
 				ip_hdr->hdr_checksum = 0;
+				//printf("%lu\n", rte_rdtsc());
 				switch (ip_hdr->next_proto_id) {
-					 case 1:
-					 	  icmphdr = (struct icmp_hdr *)(rte_pktmbuf_mtod(pkt[i], unsigned char *) + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
+					 case IPV4_ICMP:
+					 	  icmphdr = (struct icmp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
 						  icmphdr->icmp_type = 0;
 						  uint32_t cksum = ~icmphdr->icmp_cksum & 0xffff;
 						  cksum += ~htons(8 << 8) & 0xffff;
@@ -309,22 +322,44 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 		  				  cksum = (cksum & 0xffff) + (cksum >> 16);
 						  cksum = (cksum & 0xffff) + (cksum >> 16);
 						  icmphdr->icmp_cksum = ~cksum;
+						  pkt[total_tx++] = single_pkt;
 						 break;
+					 case IPV4_UDP:
+					 	  //udphdr = (struct udp_hdr *)(rte_pktmbuf_mtod(pkt[i], unsigned char *) + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
+						  recv_size += single_pkt->data_len;
+						  cur_tsc = rte_rdtsc();
+						  if (likely(prev_tsc != 0)) {
+						  		cur_clock = rte_get_tsc_hz();
+						  		cur_time += (float)(cur_tsc - prev_tsc) / (float)cur_clock;
+						  //printf("diff_tsc = %lu, cur_clock = %lu\n", cur_tsc - prev_tsc, cur_clock);
+						  //printf("%.9f\n", cur_time);
+						  		if (unlikely(cur_time >= 1)) {
+						  	   		printf("tx rate = %lu Mb/s\n", recv_size/131072);
+						  	   		cur_time = 0;
+						  	   		recv_size = 0;
+						  	   	}
+						  }
+						  rte_pktmbuf_free(single_pkt);
+						  prev_tsc = cur_tsc;
+						  continue;
+						  break;
 					default:
 						;
 				}
 			}
 		}
 		//printf("pkt addr = %x, nb_rx = %d\n", pkt, nb_rx);
-		fclose(fp);
-		uint16_t nb_tx = rte_eth_tx_burst(0, 0,pkt, nb_rx);
+		//fclose(fp);
+		if (total_tx > 0) {
+			uint16_t nb_tx = rte_eth_tx_burst(0, 0,pkt, total_tx);
 		//fprintf(fp, "nb_tx = %x\n", nb_tx);
 		/*for(i=0;i<BURST_SIZE;i++)
 				rte_pktmbuf_free(pkt[i]);*/
-		if (unlikely(nb_tx < nb_rx)) {
+			if (unlikely(nb_tx < total_tx)) {
 				uint16_t buf;
-				for (buf = nb_tx; buf < nb_rx; buf++)
+				for(buf = nb_tx; buf < total_tx; buf++)
 					rte_pktmbuf_free(pkt[buf]);
+			}
 		}
 		//printf("<%d\n", __LINE__);
 	}
@@ -344,10 +379,8 @@ int main(int argc, char *argv[])
 	argc -= ret;
 	argv += ret;
 
-	if (rte_lcore_count() < 2) {
-		 puts("Need 2 cores at least");
-		 return 0;
-	}
+	if (rte_lcore_count() != 2)
+		rte_exit(EXIT_FAILURE, "We only need 2 cores\n");
 
 
 	/* Creates a new mempool in memory to hold the mbufs. */
