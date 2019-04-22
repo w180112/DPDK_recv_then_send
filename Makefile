@@ -20,7 +20,7 @@ RTE_TARGET ?= x86_64-native-linuxapp-gcc
 include $(RTE_SDK)/mk/rte.vars.mk
 
 INCLUDE += -I.
-CFLAGS += -O3
+CFLAGS += -O3 -std=c99 -D_XOPEN_SOURCE=700
 CFLAGS += $(WERROR_FLAGS)
 
 include $(RTE_SDK)/mk/rte.extapp.mk

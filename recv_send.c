@@ -239,12 +239,15 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 	uint64_t prev_tsc = 0;
 	float cur_time = 0;
 	uint64_t cur_clock = 0;
+
+	struct ether_hdr *eth_hdr;
 	struct icmp_hdr *icmphdr;
 	struct udp_hdr udphdr;
+	struct arp_hdr *arphdr;
+	struct rte_mbuf *pkt[BURST_SIZE];
+
 	for(;;) {
-		struct rte_mbuf * pkt[BURST_SIZE];
 		total_tx = 0;
-		int i;
 		/*for(i=0;i<BURST_SIZE;i++) {
 			pkt[i] = rte_pktmbuf_alloc(mbuf_pool);
 			if (pkt[i] != 0)
@@ -265,10 +268,9 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 			continue;
 		}
 		//printf("nb_rx = %x\n", nb_rx);
-		struct ether_hdr * eth_hdr;
 		//fp = fopen("test.txt","a");
 		//fprintf(fp, "nb rx = %x\n", nb_rx);
-		for(i=0;i<nb_rx;i++) {
+		for(int i=0;i<nb_rx;i++) {
 			single_pkt = pkt[i];
 			rte_prefetch0(rte_pktmbuf_mtod(single_pkt, void *));
 			//printf("pkt->pkt_len = %x data_len  = %x\n", pkt[i]->pkt_len, pkt[i]->data_len);
@@ -281,7 +283,7 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 				//PRINT_MESSAGE((char *)eth_hdr,pkt[i]->data_len);
 				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
 				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
-				struct arp_hdr *arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
+				arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
 				//fprintf(fp, "arp src ip = %x op code = %x\n", arphdr->arp_data.arp_sip, arphdr->arp_op);
 				if (arphdr->arp_op == htons(0x0001) && arphdr->arp_data.arp_tip == ip_addr) {
 					//printf("<%d\n", __LINE__);
@@ -344,6 +346,7 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 						  continue;
 						  break;
 					default:
+						rte_pktmbuf_free(single_pkt);
 						;
 				}
 			}
@@ -381,7 +384,6 @@ int main(int argc, char *argv[])
 
 	if (rte_lcore_count() != 2)
 		rte_exit(EXIT_FAILURE, "We only need 2 cores\n");
-
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS,
