@@ -10,6 +10,7 @@
 #include <rte_icmp.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
+#include <rte_flow.h>
 #include <pthread.h>
 #include <string.h>
 #include <stdio.h>
@@ -181,13 +182,126 @@ void  PRINT_MESSAGE(unsigned char *msg, int len)
 	printf("\n");
 }
 
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2017 Mellanox Technologies, Ltd
+ */
+
+#define MAX_PATTERN_NUM		4
+
+struct rte_flow *
+generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error);
+
+struct rte_flow *
+generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error)
+{
+	struct rte_flow_attr attr;
+	struct rte_flow_item pattern[MAX_PATTERN_NUM];
+	struct rte_flow_action action[MAX_PATTERN_NUM];
+	struct rte_flow *flow = NULL;
+	struct rte_flow_action_queue queue = { .index = rx_q };
+	struct rte_flow_item_eth eth_spec;
+	struct rte_flow_item_eth eth_mask;
+	struct rte_flow_item_ipv4 ip_spec;
+	struct rte_flow_item_ipv4 ip_mask;
+	struct rte_flow_item_icmp icmp_spec;
+	struct rte_flow_item_icmp icmp_mask;
+	int res;
+
+	memset(pattern, 0, sizeof(pattern));
+	memset(action, 0, sizeof(action));
+
+	/*
+	 * set the rule attribute.
+	 * in this case only ingress packets will be checked.
+	 */
+	memset(&attr, 0, sizeof(struct rte_flow_attr));
+	attr.ingress = 1;
+
+	/*
+	 * create the action sequence.
+	 * one action only,  move packet to queue
+	 */
+
+	action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+	action[0].conf = &queue;
+	action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+	/*
+	 * set the first level of the pattern (eth).
+	 * since in this example we just want to get the
+	 * ipv4 we set this level to allow all.
+	 */
+	memset(&eth_spec, 0, sizeof(struct rte_flow_item_eth));
+	memset(&eth_mask, 0, sizeof(struct rte_flow_item_eth));
+	eth_spec.type = htons(0x0806);
+	eth_mask.type = 0xffff;
+	pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+	pattern[0].spec = &eth_spec;
+	pattern[0].mask = &eth_mask;
+	/* the final level must be always type end */
+	pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+	res = rte_flow_validate(port_id, &attr, pattern, action, error);
+	if (!res)
+		flow = rte_flow_create(port_id, &attr, pattern, action, error);
+
+	memset(pattern, 0, sizeof(pattern));
+	memset(action, 0, sizeof(action));
+
+	/*
+	 * set the rule attribute.
+	 * in this case only ingress packets will be checked.
+	 */
+	memset(&attr, 0, sizeof(struct rte_flow_attr));
+	attr.ingress = 1;
+
+	/*
+	 * create the action sequence.
+	 * one action only,  move packet to queue
+	 */
+
+	action[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
+	action[0].conf = &queue;
+	action[1].type = RTE_FLOW_ACTION_TYPE_END;
+
+	/*
+	 * set the first level of the pattern (eth).
+	 * since in this example we just want to get the
+	 * ipv4 we set this level to allow all.
+	 */
+	memset(&eth_spec, 0, sizeof(struct rte_flow_item_eth));
+	memset(&eth_mask, 0, sizeof(struct rte_flow_item_eth));
+	eth_spec.type = htons(0x0800);
+	eth_mask.type = 0xffff;
+	pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
+	pattern[0].spec = &eth_spec;
+	pattern[0].mask = &eth_mask;
+
+	memset(&ip_spec, 0, sizeof(struct rte_flow_item_ipv4));
+	memset(&ip_mask, 0, sizeof(struct rte_flow_item_ipv4));
+	ip_spec.hdr.next_proto_id = 0x1;
+	ip_spec.hdr.src_addr = htonl(0xc0a80165);
+	ip_mask.hdr.next_proto_id = 0xff;
+	ip_mask.hdr.src_addr = 0xfffffffc;
+	pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
+	pattern[1].spec = &ip_spec;
+	pattern[1].mask = &ip_mask;
+	/* the final level must be always type end */
+	pattern[2].type = RTE_FLOW_ITEM_TYPE_END;
+
+	res = rte_flow_validate(port_id, &attr, pattern, action, error);
+	if (!res)
+		flow = rte_flow_create(port_id, &attr, pattern, action, error);
+
+	return flow;
+}
 
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf = port_conf_default;
 	struct rte_eth_dev_info dev_info;
-	const uint16_t rx_rings = 1, tx_rings = 1;
+	const uint16_t rx_rings = 2, tx_rings = 2;
 	int retval;
 	uint16_t q;
 
@@ -280,30 +394,11 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 			eth_hdr = rte_pktmbuf_mtod(single_pkt,struct ether_hdr*);
 			//printf("ether type = %x\n", eth_hdr->ether_type);
 			if (eth_hdr->ether_type == htons(0x0806)) {
-				//PRINT_MESSAGE((char *)eth_hdr,pkt[i]->data_len);
-				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
-				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
-				arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
-				//fprintf(fp, "arp src ip = %x op code = %x\n", arphdr->arp_data.arp_sip, arphdr->arp_op);
-				if (arphdr->arp_op == htons(0x0001) && arphdr->arp_data.arp_tip == ip_addr) {
-					//printf("<%d\n", __LINE__);
-					memcpy(arphdr->arp_data.arp_tha.addr_bytes,arphdr->arp_data.arp_sha.addr_bytes,6);
-					memcpy(arphdr->arp_data.arp_sha.addr_bytes,mac_addr,6);
-					arphdr->arp_data.arp_tip = arphdr->arp_data.arp_sip;
-					arphdr->arp_data.arp_sip = ip_addr;
-					arphdr->arp_op = htons(0x0002);
-				}
-				pkt[total_tx++] = single_pkt;
-				//fprintf(fp, "src mac = %x:%x:%x:%x:%x:%x dst mac = %x:%x:%x:%x:%x:%x\n", arphdr->arp_data.arp_sha.addr_bytes[0], arphdr->arp_data.arp_sha.addr_bytes[1], arphdr->arp_data.arp_sha.addr_bytes[2], arphdr->arp_data.arp_sha.addr_bytes[3], arphdr->arp_data.arp_sha.addr_bytes[4], arphdr->arp_data.arp_sha.addr_bytes[5], arphdr->arp_data.arp_tha.addr_bytes[0], arphdr->arp_data.arp_tha.addr_bytes[1], arphdr->arp_data.arp_tha.addr_bytes[2], arphdr->arp_data.arp_tha.addr_bytes[3], arphdr->arp_data.arp_tha.addr_bytes[4], arphdr->arp_data.arp_tha.addr_bytes[5]);
+				puts("recv arp packet on queue 0");
+				rte_pktmbuf_free(single_pkt);
+				continue;
 			}
-			/*printf("recv packet from: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-				   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " : ",
-				eth_hdr->s_addr.addr_bytes[0],eth_hdr->s_addr.addr_bytes[1],
-				eth_hdr->s_addr.addr_bytes[2],eth_hdr->s_addr.addr_bytes[3],
-				eth_hdr->s_addr.addr_bytes[4],eth_hdr->s_addr.addr_bytes[5]);*/
 			else {
-				//unsigned char dst_mac[6] = {0x7a,0x1f,0x95,0x13,0x8d,0x38};
-				//unsigned char src_mac[6] = {0xbe,0xc2,0x46,0xe9,0x1a,0x24};
 				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
 				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
 				struct ipv4_hdr *ip_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
@@ -315,17 +410,6 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 				ip_hdr->hdr_checksum = 0;
 				//printf("%lu\n", rte_rdtsc());
 				switch (ip_hdr->next_proto_id) {
-					 case IPV4_ICMP:
-					 	  icmphdr = (struct icmp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
-						  icmphdr->icmp_type = 0;
-						  uint32_t cksum = ~icmphdr->icmp_cksum & 0xffff;
-						  cksum += ~htons(8 << 8) & 0xffff;
-						  cksum += htons(0 << 8);
-		  				  cksum = (cksum & 0xffff) + (cksum >> 16);
-						  cksum = (cksum & 0xffff) + (cksum >> 16);
-						  icmphdr->icmp_cksum = ~cksum;
-						  pkt[total_tx++] = single_pkt;
-						 break;
 					 case IPV4_UDP:
 					 	  //udphdr = (struct udp_hdr *)(rte_pktmbuf_mtod(pkt[i], unsigned char *) + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
 						  recv_size += single_pkt->data_len;
@@ -343,10 +427,10 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 						  }
 						  rte_pktmbuf_free(single_pkt);
 						  prev_tsc = cur_tsc;
-						  continue;
 						  break;
 					default:
 						rte_pktmbuf_free(single_pkt);
+						puts("recv not udp packet on queue 0");
 						;
 				}
 			}
@@ -370,10 +454,93 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 
 }
 
+int recv_arp(struct rte_mempool *mbuf_pool)
+{
+	uint64_t total_tx;
+	uint64_t recv_size = 0;
+	struct rte_mbuf *single_pkt;
+	unsigned char mac_addr[6];// = {0x76,0xfb,0xc5,0x78,0x6e,0xd5};
+	rte_eth_macaddr_get(0,(struct ether_addr *)mac_addr);
+	printf("mac = %x:%x:%x:%x:%x:%x\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
+	struct ether_hdr *eth_hdr;
+	struct arp_hdr *arphdr;
+	struct icmp_hdr *icmphdr;
+	struct rte_mbuf *pkt[BURST_SIZE];
+	uint32_t ip_addr = htonl(0xc0a80166);
+
+	for(;;) {
+		total_tx = 0;
+		uint16_t nb_rx = rte_eth_rx_burst(0, 1,pkt,BURST_SIZE);
+		if (nb_rx == 0)
+			continue;
+		for(int i=0;i<nb_rx;i++) {
+			single_pkt = pkt[i];
+			rte_prefetch0(rte_pktmbuf_mtod(single_pkt, void *));
+			eth_hdr = rte_pktmbuf_mtod(single_pkt,struct ether_hdr*);
+			if (eth_hdr->ether_type == htons(0x0806)) {
+				puts("recv arp packet on queue 1");
+				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
+				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
+				arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
+				if (arphdr->arp_op == htons(0x0001) && arphdr->arp_data.arp_tip == ip_addr) {
+					memcpy(arphdr->arp_data.arp_tha.addr_bytes,arphdr->arp_data.arp_sha.addr_bytes,6);
+					memcpy(arphdr->arp_data.arp_sha.addr_bytes,mac_addr,6);
+					arphdr->arp_data.arp_tip = arphdr->arp_data.arp_sip;
+					arphdr->arp_data.arp_sip = ip_addr;
+					arphdr->arp_op = htons(0x0002);
+				}
+				pkt[total_tx++] = single_pkt;
+			}
+			else {
+				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
+				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
+				struct ipv4_hdr *ip_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
+				ip_hdr->dst_addr = ip_hdr->src_addr;
+				ip_hdr->src_addr = ip_addr;
+				single_pkt->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
+				single_pkt->l2_len = sizeof(struct ether_hdr);
+				single_pkt->l3_len = sizeof(struct ipv4_hdr);
+				ip_hdr->hdr_checksum = 0;
+				switch (ip_hdr->next_proto_id) {
+					 case IPV4_ICMP:
+					 	puts("recv icmp packet");
+					 	  icmphdr = (struct icmp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
+						  icmphdr->icmp_type = 0;
+						  uint32_t cksum = ~icmphdr->icmp_cksum & 0xffff;
+						  cksum += ~htons(8 << 8) & 0xffff;
+						  cksum += htons(0 << 8);
+		  				  cksum = (cksum & 0xffff) + (cksum >> 16);
+						  cksum = (cksum & 0xffff) + (cksum >> 16);
+						  icmphdr->icmp_cksum = ~cksum;
+						  pkt[total_tx++] = single_pkt;
+						 break;
+					default:
+						rte_pktmbuf_free(single_pkt);
+						puts("recv other packet at queue 1");
+						;
+				}
+			}
+		}
+		if (total_tx > 0) {
+			uint16_t nb_tx = rte_eth_tx_burst(0, 1,pkt, total_tx);
+			if (unlikely(nb_tx < total_tx)) {
+				uint16_t buf;
+				for(buf = nb_tx; buf < total_tx; buf++)
+					rte_pktmbuf_free(pkt[buf]);
+			}
+		}
+	}
+	return 0;
+
+}
+
 int main(int argc, char *argv[])
 {
 	 struct rte_mempool *mbuf_pool;
 	 uint16_t portid;
+	 struct rte_flow_error error;
+	struct rte_flow *flow;
 
 	 int ret = rte_eal_init(argc, argv);
 	 if (ret < 0)
@@ -382,8 +549,8 @@ int main(int argc, char *argv[])
 	argc -= ret;
 	argv += ret;
 
-	if (rte_lcore_count() != 2)
-		rte_exit(EXIT_FAILURE, "We only need 2 cores\n");
+	if (rte_lcore_count() != 3)
+		rte_exit(EXIT_FAILURE, "We only need 3 cores\n");
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS,
@@ -398,10 +565,19 @@ int main(int argc, char *argv[])
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu8 "\n",portid);
 	}
 
-	unsigned lcore_id;
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
-        rte_eal_remote_launch((void *)receive_send_pkt, mbuf_pool, lcore_id);
-    }
+	flow = generate_flow(0,1,&error);
+	if (!flow) {
+		printf("Flow can't be created %d message: %s\n",
+			error.type,
+			error.message ? error.message : "(no stated reason)");
+		rte_exit(EXIT_FAILURE, "error in creating flow");
+	}
+
+	//unsigned lcore_id;
+	//RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+        rte_eal_remote_launch((void *)recv_arp, mbuf_pool, 1);
+        rte_eal_remote_launch((void *)receive_send_pkt, mbuf_pool, 2);
+    //}
 	rte_eal_mp_wait_lcore();
 	
 	return 0;
