@@ -11,6 +11,7 @@
 #include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_flow.h>
+#include <rte_eth_ctrl.h>
 #include <pthread.h>
 #include <string.h>
 #include <stdio.h>
@@ -194,6 +195,20 @@ generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error);
 struct rte_flow *
 generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error)
 {
+	struct rte_eth_flex_filter filter;
+	memset(&filter,0,sizeof(struct rte_eth_flex_filter));
+	filter.len = 24;
+	filter.priority = 1;
+	filter.queue = rx_q;
+	uint8_t bytes[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+						0x00,0x00,0x00,0x00,0x08,0x00,0x00,0x00};//,
+						//0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
+	uint8_t mask[] = {0x0c};
+	memcpy(filter.bytes,bytes,16);
+	memcpy(filter.mask,mask,1);
+	rte_eth_dev_filter_ctrl(port_id,RTE_ETH_FILTER_FLEXIBLE,RTE_ETH_FILTER_ADD,&filter);
+
+#if 0
 	struct rte_flow_attr attr;
 	struct rte_flow_item pattern[MAX_PATTERN_NUM];
 	struct rte_flow_action action[MAX_PATTERN_NUM];
@@ -203,8 +218,10 @@ generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error)
 	struct rte_flow_item_eth eth_mask;
 	struct rte_flow_item_ipv4 ip_spec;
 	struct rte_flow_item_ipv4 ip_mask;
-	struct rte_flow_item_icmp icmp_spec;
-	struct rte_flow_item_icmp icmp_mask;
+	struct rte_flow_item_raw raw_spec;
+	struct rte_flow_item_raw raw_mask;
+	uint8_t spec[12] 	= {0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01};
+	uint8_t mask[12] 	= {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
 	int res;
 
 	memset(pattern, 0, sizeof(pattern));
@@ -245,8 +262,8 @@ generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error)
 	if (!res)
 		flow = rte_flow_create(port_id, &attr, pattern, action, error);
 
-	memset(pattern, 0, sizeof(pattern));
-	memset(action, 0, sizeof(action));
+	memset(pattern,0,sizeof(pattern));
+	memset(action,0,sizeof(action));
 
 	/*
 	 * set the rule attribute.
@@ -269,23 +286,31 @@ generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error)
 	 * since in this example we just want to get the
 	 * ipv4 we set this level to allow all.
 	 */
-	memset(&eth_spec, 0, sizeof(struct rte_flow_item_eth));
-	memset(&eth_mask, 0, sizeof(struct rte_flow_item_eth));
-	eth_spec.type = htons(0x0800);
-	eth_mask.type = 0xffff;
+	memset(&eth_spec,0,sizeof(struct rte_flow_item_eth));
+	memset(&eth_mask,0,sizeof(struct rte_flow_item_eth));
+	/*memcpy(eth_spec.dst.addr_bytes,mac_addr[port_id],ETH_ALEN);
+	for(int i=0; i<ETH_ALEN; i++)
+		eth_mask.dst.addr_bytes[i] = 0xff;*/
+	eth_spec.type = 0;
+	eth_mask.type = 0;
 	pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
 	pattern[0].spec = &eth_spec;
 	pattern[0].mask = &eth_mask;
 
+	/*
+	 * setting the third level of the pattern (ip).
+	 * in this example this is the level we care about
+	 * so we set it according to the parameters.
+	 */
 	memset(&ip_spec, 0, sizeof(struct rte_flow_item_ipv4));
 	memset(&ip_mask, 0, sizeof(struct rte_flow_item_ipv4));
 	ip_spec.hdr.next_proto_id = 0x1;
-	ip_spec.hdr.src_addr = htonl(0xc0a80165);
 	ip_mask.hdr.next_proto_id = 0xff;
-	ip_mask.hdr.src_addr = 0xfffffffc;
+	
 	pattern[1].type = RTE_FLOW_ITEM_TYPE_IPV4;
 	pattern[1].spec = &ip_spec;
 	pattern[1].mask = &ip_mask;
+
 	/* the final level must be always type end */
 	pattern[2].type = RTE_FLOW_ITEM_TYPE_END;
 
@@ -294,6 +319,7 @@ generate_flow(uint16_t port_id, uint16_t rx_q, struct rte_flow_error *error)
 		flow = rte_flow_create(port_id, &attr, pattern, action, error);
 
 	return flow;
+#endif
 }
 
 static inline int
@@ -348,7 +374,7 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 	unsigned char mac_addr[6];// = {0x76,0xfb,0xc5,0x78,0x6e,0xd5};
 	rte_eth_macaddr_get(0,(struct ether_addr *)mac_addr);
 	printf("mac = %x:%x:%x:%x:%x:%x\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-	uint32_t ip_addr = htonl(0xc0a80166);
+	uint32_t ip_addr = htonl(0xc0a80266);
 	uint64_t cur_tsc;
 	uint64_t prev_tsc = 0;
 	float cur_time = 0;
@@ -395,8 +421,19 @@ int receive_send_pkt(struct rte_mempool *mbuf_pool)
 			//printf("ether type = %x\n", eth_hdr->ether_type);
 			if (eth_hdr->ether_type == htons(0x0806)) {
 				puts("recv arp packet on queue 0");
-				rte_pktmbuf_free(single_pkt);
-				continue;
+				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
+				memcpy(eth_hdr->s_addr.addr_bytes,mac_addr,6);
+				arphdr = (struct arp_hdr *)(rte_pktmbuf_mtod(single_pkt, unsigned char *) + sizeof(struct ether_hdr));
+				if (arphdr->arp_op == htons(0x0001) && arphdr->arp_data.arp_tip == ip_addr) {
+					memcpy(arphdr->arp_data.arp_tha.addr_bytes,arphdr->arp_data.arp_sha.addr_bytes,6);
+					memcpy(arphdr->arp_data.arp_sha.addr_bytes,mac_addr,6);
+					arphdr->arp_data.arp_tip = arphdr->arp_data.arp_sip;
+					arphdr->arp_data.arp_sip = ip_addr;
+					arphdr->arp_op = htons(0x0002);
+				}
+				pkt[total_tx++] = single_pkt;
+				/*rte_pktmbuf_free(single_pkt);
+				continue;*/
 			}
 			else {
 				memcpy(eth_hdr->d_addr.addr_bytes,eth_hdr->s_addr.addr_bytes,6);
@@ -467,7 +504,7 @@ int recv_arp(struct rte_mempool *mbuf_pool)
 	struct arp_hdr *arphdr;
 	struct icmp_hdr *icmphdr;
 	struct rte_mbuf *pkt[BURST_SIZE];
-	uint32_t ip_addr = htonl(0xc0a80166);
+	uint32_t ip_addr = htonl(0xc0a80266);
 
 	for(;;) {
 		total_tx = 0;
@@ -564,8 +601,8 @@ int main(int argc, char *argv[])
 		if (port_init(portid,mbuf_pool) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu8 "\n",portid);
 	}
-
 	flow = generate_flow(0,1,&error);
+	
 	if (!flow) {
 		printf("Flow can't be created %d message: %s\n",
 			error.type,
